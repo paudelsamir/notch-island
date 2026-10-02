@@ -84,6 +84,7 @@ Item {
         earRadius: 12,
         notchWidth: 0,
         notchHeight: 0,
+        sizeScale: 1.0,
         opacity: 1.0,
         border: false,
         iconSize: 30,
@@ -124,11 +125,29 @@ Item {
     })
 
     FileView {
+        id: settingsFile
         path: root.settingsPath
         watchChanges: true
+        atomicWrites: true
         printErrors: false
-        onFileChanged: reload()
-        onAdapterUpdated: writeAdapter()
+
+        // Set while our own write is echoing back through the watcher.
+        property bool selfWrite: false
+
+        onFileChanged: {
+            // Our own writeAdapter() shows up here too. Reloading that echo
+            // re-reads the file while a value is being dragged and clobbers it
+            // with a stale one, which made sliders snap back to the default now
+            // and then. Genuine edits, from a hand edit or a second instance,
+            // arrive outside this window and still reload as before.
+            if (!settingsFile.selfWrite) settingsFile.reload()
+        }
+
+        onAdapterUpdated: {
+            writeAdapter()
+            settingsFile.selfWrite = true
+            selfWriteTimer.restart()
+        }
         onLoadFailed: function(error) {
             if (error !== FileViewError.FileNotFound) return
             writeAdapter()
@@ -149,6 +168,7 @@ Item {
             property real roundness: 70            // 0..100
             property real notchWidth: 0            // 0 = fit content, else minimum px
             property real notchHeight: 0           // 0 = fit content, else minimum px
+            property real sizeScale: 1.0           // 0.5..2.0, scales the resting notch
             property real earRadius: 12           // 0..24, curve where the notch meets the bar
             property real opacity: 1.0             // 0.4..1
             property bool border: false
@@ -198,6 +218,15 @@ Item {
             property bool clock24h: true
             property string fontFamily: "sans-serif"
         }
+    }
+
+    // Settings reload guard. This must live outside the FileView above: its
+    // default property is `adapter`, so a Timer as a direct child makes the
+    // whole config fail to load.
+    Timer {
+        id: selfWriteTimer
+        interval: 250
+        onTriggered: settingsFile.selfWrite = false
     }
 
     // =======================================================================================
@@ -692,6 +721,7 @@ Item {
                     edge: root.edge
                     color: root.colorShell
                     radius: root.clampNumber(root.settings.earRadius, 0, 24)
+                    zoom: island.sizeZoom
                     strokeColor: root.withAlpha(root.colorText, 0.14)
                     strokeWidth: root.settings.border ? 1 : 0
                     active: root.notchMode
@@ -738,8 +768,17 @@ Item {
                     readonly property real manualW: Number(root.settings.notchWidth) || 0
                     readonly property real manualH: Number(root.settings.notchHeight) || 0
                     readonly property bool collapsedRest: root.view === "rest" && root.restKind !== "media" && !clockView.expanded
+                    readonly property real sizeScale: Math.max(0.5, Math.min(2.0, Number(root.settings.sizeScale) || 1))
                     readonly property real targetW: activeSurface ? (collapsedRest && manualW > 0 ? manualW : Math.max(48, activeSurface.islandWidth)) : 120
                     readonly property real targetH: activeSurface ? (collapsedRest && manualH > 0 ? manualH : Math.max(32, activeSurface.islandHeight + popupChromeH)) : 44
+                    // Size zooms every resting pill: the dock pill, the compact
+                    // clock and the media pill. It stays off once anything is
+                    // expanded, so open surfaces keep fitting their content.
+                    readonly property bool zoomableRest: root.view === "rest" && !clockView.expanded
+                    // A uniform zoom of the resting shell, not a resize: the layout
+                    // box stays at its natural size and the whole stage (text,
+                    // icons, radius, padding) is transformed together by sizeZoom.
+                    readonly property real sizeZoom: zoomableRest ? sizeScale : 1
                     readonly property real popupChromeH: 0
 
                     // ---- animated size ---------------------------------------------------
@@ -809,12 +848,12 @@ Item {
                     }
 
                     x: root.horiz
-                       ? along(parent.width, width)
+                       ? along(parent.width, visualW)
                        : (root.edge === "left" ? root.gapPx : parent.width - width - root.gapPx)
 
                     y: root.horiz
                        ? (root.edge === "top" ? root.gapPx : parent.height - height - root.gapPx)
-                       : along(parent.height, height)
+                       : along(parent.height, visualH)
 
                     // ---- look ---------------------------------------------------------------
                     color: root.colorShell
@@ -849,7 +888,13 @@ Item {
                                    : root.edge === "bottom" ? Item.Bottom
                                    : root.edge === "left" ? Item.Left : Item.Right
 
-                    scale: root.view === "rest" && shellHover.hovered && root.settings.hoverLift && !root.notchMode ? 1.05 : 1
+                    readonly property real hoverScale: root.view === "rest" && shellHover.hovered && root.settings.hoverLift && !root.notchMode ? 1.05 : 1
+                    // Visual footprint, so the on-screen clamp below keeps a zoomed
+                    // notch inside the margins instead of letting it overhang.
+                    readonly property real visualW: width * scale
+                    readonly property real visualH: height * scale
+
+                    scale: hoverScale * island.sizeZoom
 
                     Behavior on scale {
                         NumberAnimation { duration: 220 * root.motionScale; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
@@ -1166,6 +1211,8 @@ Item {
         if (settings.openMode !== "hover" && settings.openMode !== "click") settings.openMode = defaults.openMode
         if (["auto", "above", "below"].indexOf(settings.dotsSide) < 0) settings.dotsSide = defaults.dotsSide
 
+        if (typeof settings.sizeScale !== "number") settings.sizeScale = defaults.sizeScale
+
         var limits = {
             iconSize: [16, 64],
             dockSpacing: [0, 24],
@@ -1175,6 +1222,7 @@ Item {
             earRadius: [0, 24],
             notchWidth: [0, 1000],
             notchHeight: [0, 500],
+            sizeScale: [0.5, 2.0],
             smoothness: [0, 100],
             motionScale: [0.3, 3],
             bannerSeconds: [1, 60],

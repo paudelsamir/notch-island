@@ -27,37 +27,52 @@ Item {
     property real strokeWidth: 0
     property real radius: 12
     property bool active: true
+    // Zoom of the shell (Settings > Shape > Size). 1 = unzoomed.
+    property real zoom: 1
 
     // Ears never need input; the notch input mask only covers the shell.
     visible: ears.active && shell !== null
 
     readonly property bool horizontalEdge: edge === "top" || edge === "bottom"
 
+    // The shell is zoomed with a transform, so its layout rect is not what is
+    // drawn. Rebuild the visual rect here (origin pinned to the screen edge,
+    // matching the shell's transformOrigin) to keep the ears welded to it.
+    readonly property real shellW: shell ? shell.width * zoom : 0
+    readonly property real shellH: shell ? shell.height * zoom : 0
+    readonly property real shellX: shell ? (horizontalEdge
+                                              ? shell.x + (shell.width - shellW) / 2
+                                              : (edge === "left" ? shell.x : shell.x + (shell.width - shellW))) : 0
+    readonly property real shellY: shell ? (horizontalEdge
+                                              ? (edge === "top" ? shell.y : shell.y + (shell.height - shellH))
+                                              : shell.y + (shell.height - shellH) / 2) : 0
+    readonly property real earR: radius * zoom
+
     // ---- geometry helpers ---------------------------------------------------------
     // Position of the ear on the "start" side (left of / above the shell).
     function startX() {
         if (!shell) return 0
-        if (horizontalEdge) return shell.x - radius
-        return edge === "left" ? shell.x : shell.x + shell.width - radius
+        if (horizontalEdge) return shellX - earR
+        return edge === "left" ? shellX : shellX + shellW - earR
     }
 
     function startY() {
         if (!shell) return 0
-        if (!horizontalEdge) return shell.y - radius
-        return edge === "top" ? shell.y : shell.y + shell.height - radius
+        if (!horizontalEdge) return shellY - earR
+        return edge === "top" ? shellY : shellY + shellH - earR
     }
 
     // Position of the ear on the "end" side (right of / below the shell).
     function endX() {
         if (!shell) return 0
-        if (horizontalEdge) return shell.x + shell.width
-        return edge === "left" ? shell.x : shell.x + shell.width - radius
+        if (horizontalEdge) return shellX + shellW
+        return edge === "left" ? shellX : shellX + shellW - earR
     }
 
     function endY() {
         if (!shell) return 0
-        if (!horizontalEdge) return shell.y + shell.height
-        return edge === "top" ? shell.y : shell.y + shell.height - radius
+        if (!horizontalEdge) return shellY + shellH
+        return edge === "top" ? shellY : shellY + shellH - earR
     }
 
     // ---- one ear ---------------------------------------------------------------------
@@ -153,7 +168,7 @@ Item {
         fill: ears.color
         stroke: ears.strokeColor
         strokeWidth: ears.strokeWidth
-        r: ears.radius
+        r: ears.earR
         x: ears.startX()
         y: ears.startY()
     }
@@ -165,7 +180,7 @@ Item {
         fill: ears.color
         stroke: ears.strokeColor
         strokeWidth: ears.strokeWidth
-        r: ears.radius
+        r: ears.earR
         x: ears.endX()
         y: ears.endY()
     }
@@ -189,6 +204,7 @@ Item {
 
     onEdgeChanged: reposition()
     onRadiusChanged: reposition()
+    onZoomChanged: reposition()
     Component.onCompleted: reposition()
 
     // Re-evaluate when the shell first gets a real size (it starts at 0x0).

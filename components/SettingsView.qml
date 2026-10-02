@@ -382,8 +382,9 @@ Item {
                         anchors.verticalCenterOffset: 6
                         // Mirror the manual size sliders (scaled to fit);
                         // 0 means fit content, shown representatively.
-                        readonly property real wantW: (view.s && Number(view.s.notchWidth) > 0) ? Number(view.s.notchWidth) : ((view.s && view.s.mode === "pill") ? 220 : 300)
-                        readonly property real wantH: (view.s && Number(view.s.notchHeight) > 0) ? Number(view.s.notchHeight) : 40
+                        readonly property real sizeScale: (view.s ? (Number(view.s.sizeScale) || 1) : 1)
+                        readonly property real wantW: (((view.s && Number(view.s.notchWidth) > 0) ? Number(view.s.notchWidth) : ((view.s && view.s.mode === "pill") ? 220 : 300))) * sizeScale
+                        readonly property real wantH: (((view.s && Number(view.s.notchHeight) > 0) ? Number(view.s.notchHeight) : 40)) * sizeScale
                         readonly property bool manual: (view.s && (Number(view.s.notchWidth) > 0 || Number(view.s.notchHeight) > 0)) || false
                         readonly property real fit: Math.min(1, (parent.width - 48) / Math.max(1, wantW), 56 / Math.max(1, wantH))
                         width: wantW * fit
@@ -447,6 +448,21 @@ Item {
                     value: view.s ? view.s.earRadius : 12
                     onChanged: function(v) { view.setValue("earRadius", v) }
                     onReset: view.resetValue("earRadius")
+                }
+
+                SettingRow {
+                    width: parent.width
+                    host: view.host
+                    kind: "slider"
+                    title: "Size"
+                    subtitle: "Zoom the resting notch and the media pill, everything inside scales too"
+                    from: 50
+                    to: 200
+                    step: 5
+                    unit: " %"
+                    value: view.s ? Math.round((Number(view.s.sizeScale) || 1) * 100) : 100
+                    onChanged: function(v) { view.setValue("sizeScale", v / 100) }
+                    onReset: view.resetValue("sizeScale")
                 }
 
                 SettingRow {
