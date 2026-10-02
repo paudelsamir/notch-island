@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "paudelsamir.notch-island",
+  "name": "Notch Island",
+  "version": "0.1.0",
+  "author": "paudelsamir",
+  "license": "MIT",
+  "description": "An edge-anchored notch / pill that rests as an app dock, clock, headlines, weather or quick notes, becomes a media island while music plays, and pops up volume, brightness, now playing, opencode and power.",
+  "kinds": [
+    "overlay"
+  ],
+  "entryPoints": {
+    "overlay": "Notch.qml"
+  },
+  "keepLoaded": true
+}

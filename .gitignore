@@ -1,0 +1,8 @@
+*.bak
+*.bak.*
+*.orig
+*.rej
+*~
+.DS_Store
+node_modules/
+__pycache__/
