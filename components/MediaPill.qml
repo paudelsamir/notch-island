@@ -302,11 +302,20 @@ Item {
             Row {
                 id: verticalMarquee
                 width: titleBoxV.height
-                height: 22
-                anchors.centerIn: parent
+                height: Math.max(1, verticalLineV.implicitHeight)
                 rotation: -90
                 spacing: 36
-                x: pill.needsVerticalScroll ? pill.verticalScroll : (titleBoxV.width - width) / 2
+
+                // This Row is rotated -90, which swaps the axes: its own x axis
+                // is the pill's vertical run, its y axis is the horizontal one.
+                // Translating an item moves it in parent x, so a scroll driven
+                // through x slides the title sideways out of the 22px pill
+                // instead of along the run, and centring through x leaves a
+                // short title pinned against one end. Both therefore go
+                // through y, and the row height follows the text so the title
+                // also sits centred across the pill.
+                x: (titleBoxV.width - width) / 2
+                y: pill.needsVerticalScroll ? pill.verticalScroll : (verticalLineV.implicitWidth - height) / 2
 
                 Text {
                     id: verticalLineV
@@ -332,7 +341,12 @@ Item {
                     property: "verticalScroll"
                     running: pill.active && pill.needsVerticalScroll
                     from: 0
-                    to: -(verticalLineV.implicitWidth + 36)
+                    // Positive: this Row is rotated -90, so translating it down
+                    // in parent y is what carries the title up along the run.
+                    // The period has to be exactly one copy plus the spacing,
+                    // otherwise copy two does not land where copy one started
+                    // and the pill empties out before the loop restarts.
+                    to: verticalLineV.implicitWidth + 36
                     duration: Math.max(4000, (verticalLineV.implicitWidth + 36) * 28)
                     loops: Animation.Infinite
                 }
