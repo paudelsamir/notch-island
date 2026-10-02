@@ -268,7 +268,7 @@ Item {
         var empty = {
             tempC: "", condition: "", feelsC: "", humidity: "",
             location: "", windKph: "", windDir: "", uv: "",
-            precipMM: "", updatedAgo: "", forecast: []
+            precipMM: "", visibility: "", updatedAgo: "", forecast: []
         }
         if (!hasExternalWeather) {
             var o = ownWeatherData || {}
@@ -294,6 +294,7 @@ Item {
                 windDir: o.windDir || "",
                 uv: o.uvIndex || o.uv || "",
                 precipMM: o.precipMM || "",
+                visibility: o.visibility || "",
                 updatedAgo: o.updatedAgo || "",
                 forecast: of
             }
@@ -321,6 +322,7 @@ Item {
             windDir: weather.windDir || "",
             uv: weather.uvIndex || weather.uv || "",
             precipMM: weather.precipMM || "",
+            visibility: weather.visibility || "",
             updatedAgo: weather.updatedAgo || "",
             forecast: forecast
         }
@@ -367,6 +369,96 @@ Item {
         if (c.indexOf("overcast") !== -1 || c.indexOf("cloud") !== -1 || c.indexOf("partly") !== -1) return icons.partlyCloudy
         if (c.indexOf("clear") !== -1 || c.indexOf("sunny") !== -1) return icons.sun
         return icons.cloudy
+    }
+
+    // =========================================================================================
+    // WEATHER CARD derived values
+    // =========================================================================================
+    // Everything the card needs that is not a straight copy out of weatherData.
+    // Cached as properties rather than recomputed in each binding: the forecast
+    // bar fractions run three times per frame otherwise.
+
+    // 16-point compass label -> degrees, so the arrow can point the way the wind
+    // is coming from. An unknown label falls back to north.
+    function windBearing(dir) {
+        var order = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+        var idx = order.indexOf(String(dir || "").toUpperCase())
+        return idx < 0 ? 0 : idx * 22.5
+    }
+
+    // "YYYY-MM-DD" is read as UTC by Date(), which slides the weekday over for
+    // anyone west of Greenwich, so split it and build a local date instead.
+    function localDate(s) {
+        var m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/)
+        if (!m) return null
+        return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    }
+
+    function forecastDayLabel(i, dateStr) {
+        if (i === 0) return "TODAY"
+        var d = localDate(dateStr)
+        return d ? Qt.formatDate(d, "ddd").toUpperCase() : ""
+    }
+
+    // A flat week makes every bar identical and useless, so pin the bar to a
+    // fixed 15-85% instead of collapsing it to nothing.
+    function forecastFrac(value, isHigh) {
+        if (!(weekMaxC > weekMinC)) return isHigh ? 0.85 : 0.15
+        var f = (Number(value) - weekMinC) / (weekMaxC - weekMinC)
+        return Math.max(0, Math.min(1, isNaN(f) ? 0.5 : f))
+    }
+
+    readonly property real todayRain: weatherHasData && weatherData.forecast.length > 0
+        ? Number(weatherData.forecast[0].rainChance || 0) : 0
+
+    // Feels-like only earns a line when it disagrees with the reading. Repeating
+    // "20 degrees" twice, once in the hero and once in the grid, was noise.
+    readonly property real feelsDelta: (weatherHasData && weatherData.feelsC !== "" && weatherData.tempC !== "")
+        ? Number(weatherData.feelsC) - Number(weatherData.tempC) : 0
+    readonly property bool feelsWorthShowing: Math.abs(feelsDelta) >= 2
+
+    readonly property real weekMinC: {
+        if (!weatherHasData) return 0
+        var lo = []
+        for (var i = 0; i < weatherData.forecast.length; i++) {
+            var v = Number(weatherData.forecast[i].loC)
+            if (!isNaN(v)) lo.push(v)
+        }
+        return lo.length > 0 ? Math.min.apply(null, lo) : 0
+    }
+
+    readonly property real weekMaxC: {
+        if (!weatherHasData) return 0
+        var hi = []
+        for (var i = 0; i < weatherData.forecast.length; i++) {
+            var v = Number(weatherData.forecast[i].hiC)
+            if (!isNaN(v)) hi.push(v)
+        }
+        return hi.length > 0 ? Math.max.apply(null, hi) : 0
+    }
+
+    // One advisory line, first match wins, nothing when the day is unremarkable.
+    // The stat row already carries the numbers; this carries the only thing
+    // worth changing your behaviour over.
+    readonly property var weatherAdvisory: {
+        if (!weatherHasData) return null
+        var d = weatherData
+        var cond = String(d.condition || "").toLowerCase()
+        var uv = Number(d.uv)
+        var wind = Number(d.windKph)
+        if (cond.indexOf("thunder") !== -1)
+            return { icon: icons.storm, text: "Thunderstorm - worth staying in" }
+        if (todayRain >= 60)
+            return { icon: icons.rain, text: todayRain + "% rain - take an umbrella" }
+        if (uv >= 8)
+            return { icon: icons.sun, text: "UV " + d.uv + ", extreme - cover up" }
+        if (uv >= 6)
+            return { icon: icons.sun, text: "UV " + d.uv + ", high - sunscreen if you are out" }
+        if (wind >= 31)
+            return { icon: icons.wind, text: "Strong wind, " + d.windKph + " km/h" }
+        if (Math.abs(feelsDelta) >= 5)
+            return { icon: icons.thermometer, text: "Feels " + (feelsDelta > 0 ? "hotter" : "colder") + " than it reads" }
+        return null
     }
 
     // Refresh on first expand, then keep news/weather quietly current.
@@ -1139,370 +1231,737 @@ Item {
                     }
                 }
 
-                // Minimal bounded weather card: hero, meta strip, divider,
-                // 3-day forecast in one bordered box.
+                // =====================================================================
+                // WEATHER CARD
+                // =====================================================================
+                // Weather is one dense object rather than a list, so it gets the
+                // only bordered box in the hub - the border is what tells it
+                // apart from the news rows beside it.
+                //
+                // Width budget: the hub is 392 wide inside 16 margins, so the
+                // card is 360 and its content is 332 after the 14 inset. Every
+                // size below is measured against those two numbers.
+                //
+                // Type, four steps only: 34 hero / 13 value / 12 body / 10
+                // tracked caps. 10px is captions ("HUMIDITY", "DETAILS") and
+                // never anything you have to read as prose.
+                //
+                // Accent is rationed on purpose: today's row, the rain figures
+                // and the advisory strip are the only things allowed to use it,
+                // so the eye still has somewhere to land.
                 Rectangle {
+                    id: wxCard
                     anchors.fill: parent
                     radius: 18
-                    color: "#ff00ff" // TEMP bisect
+                    color: Qt.rgba(1, 1, 1, 0.04)
                     border.width: 1
                     border.color: Qt.rgba(1, 1, 1, 0.10)
                     clip: true
 
-                Column {
-                    // ---- top row: place left, freshness + refresh right ----
                     Item {
-                        width: parent.width
-                        height: 18
-                        visible: view.weatherHasData || view.weatherLoading
+                        id: wxInner
+                        anchors.fill: parent
+                        anchors.margins: 14
 
-                        Text {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: view.weatherHasData ? String(view.weatherData.location || "Current conditions").toUpperCase() : "WEATHER"
-                            color: view.mutedColor
-                            font.pixelSize: 10
-                            font.weight: Font.Medium
-                            font.family: view.fontFamily
-                            font.letterSpacing: 1.2
-                        }
+                        // One flow, not a pinned top and bottom. The card shares
+                        // its height with the news and notes tabs, and at the
+                        // short end the two halves met and overlapped. A single
+                        // scrolling column cannot collide with itself, and when
+                        // the card is tall - the normal case - there is nothing to
+                        // scroll. Same treatment as the news list.
+                        Flickable {
+                            anchors.fill: parent
+                            contentWidth: width
+                            contentHeight: wxFlow.height
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            visible: view.weatherHasData
 
-                        Text {
-                            anchors.right: wxRefresh.left
-                            anchors.rightMargin: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: view.weatherHasData && !!view.weatherData.updatedAgo
-                            text: view.weatherData.updatedAgo
-                            color: view.mutedColor
-                            font.pixelSize: 10
-                            font.family: view.fontFamily
-                        }
+                            Column {
+                                id: wxFlow
+                                width: parent.width
+                                spacing: 12
 
-                        Item {
-                            id: wxRefresh
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 20
-                            height: 20
+                                // ---- header: place, freshness, refresh ----
+                                // The refresh button stays put when there is no
+                                // data. Hiding it on the empty state left no way
+                                // back from a failed fetch.
+                                Item {
+                                    width: parent.width
+                                    height: 18
 
-                            NotchIcon {
-                                anchors.centerIn: parent
-                                name: icons.refresh
-                                size: 13
-                                color: wxRefreshArea.containsMouse ? view.textColor : view.mutedColor
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.right: wxFresh.left
+                                        anchors.rightMargin: 8
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: view.weatherData.location !== "" ? view.weatherData.location.toUpperCase() : "WEATHER"
+                                        color: view.mutedColor
+                                        font.pixelSize: 10
+                                        font.weight: Font.Medium
+                                        font.family: view.fontFamily
+                                        font.letterSpacing: 1.1
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Text {
+                                        id: wxFresh
+                                        anchors.right: wxRefresh.left
+                                        anchors.rightMargin: 6
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        visible: view.weatherData.updatedAgo !== ""
+                                        text: view.weatherData.updatedAgo
+                                        color: view.mutedColor
+                                        font.pixelSize: 10
+                                        font.family: view.fontFamily
+                                    }
+
+                                    Item {
+                                        id: wxRefresh
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 20
+                                        height: 20
+                                        opacity: view.weatherLoading ? 0.4 : 1
+
+                                        Behavior on opacity {
+                                            NumberAnimation { duration: 120 * view.speed }
+                                        }
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            radius: width / 2
+                                            color: wxRefreshArea.containsMouse ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.06)
+                                        }
+
+                                        NotchIcon {
+                                            anchors.centerIn: parent
+                                            name: icons.refresh
+                                            size: 12
+                                            color: view.textColor
+                                        }
+
+                                        MouseArea {
+                                            id: wxRefreshArea
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: view.refreshWeather()
+                                        }
+                                    }
+                                }
+
+                                // ---- now: reading on the left, today on the right ----
+                                // Left is what you look at, right is what you plan
+                                // around, so the two never share a line and the
+                                // hero keeps a clean edge to read against.
+                                Rectangle {
+                                    id: wxNow
+                                    width: parent.width
+                                    height: 80
+                                    radius: 14
+                                    color: Qt.rgba(view.accentColor.r, view.accentColor.g, view.accentColor.b, 0.09)
+                                    border.width: 1
+                                    border.color: Qt.rgba(view.accentColor.r, view.accentColor.g, view.accentColor.b, 0.22)
+
+                                    Item {
+                                        id: wxHeroIconBox
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 14
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 38
+                                        height: 38
+
+                                        NotchIcon {
+                                            anchors.centerIn: parent
+                                            name: view.weatherIconName(view.weatherData.condition)
+                                            size: 36
+                                            color: view.textColor
+                                        }
+                                    }
+
+                                    Column {
+                                        id: wxHeroCol
+                                        anchors.left: wxHeroIconBox.right
+                                        anchors.leftMargin: 12
+                                        // Bounded by the right-hand stack, so a long
+                                        // condition elides instead of running under it.
+                                        anchors.right: wxToday.left
+                                        anchors.rightMargin: 12
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 0
+
+                                        Item {
+                                            width: parent.width
+                                            height: 34
+
+                                            Text {
+                                                id: wxTempNum
+                                                anchors.left: parent.left
+                                                anchors.bottom: parent.bottom
+                                                text: view.weatherData.tempC
+                                                color: view.textColor
+                                                font.pixelSize: 34
+                                                font.weight: Font.DemiBold
+                                                font.family: view.fontFamily
+                                            }
+
+                                            // The unit rides the hero only. Everything
+                                            // below is a bare degree, which is the
+                                            // same thing once the big number has
+                                            // said it once.
+                                            Text {
+                                                anchors.left: wxTempNum.right
+                                                anchors.leftMargin: 1
+                                                anchors.bottom: parent.bottom
+                                                anchors.bottomMargin: 4
+                                                visible: wxTempNum.text !== ""
+                                                text: "\u00B0C"
+                                                color: view.mutedColor
+                                                font.pixelSize: 13
+                                                font.weight: Font.Medium
+                                                font.family: view.fontFamily
+                                            }
+                                        }
+
+                                        Text {
+                                            width: parent.width
+                                            text: view.weatherData.condition
+                                            color: view.mutedColor
+                                            font.pixelSize: 12
+                                            font.family: view.fontFamily
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+
+                                    Column {
+                                        id: wxToday
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 14
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 4
+
+                                        Text {
+                                            anchors.right: parent.right
+                                            visible: view.weatherData.forecast.length > 0
+                                            text: view.weatherData.forecast.length > 0 ? "H " + view.weatherData.forecast[0].hiC + "\u00B0   L " + view.weatherData.forecast[0].loC + "\u00B0" : ""
+                                            color: view.textColor
+                                            font.pixelSize: 12
+                                            font.weight: Font.Medium
+                                            font.family: view.fontFamily
+                                        }
+
+                                        // Feels-like only appears when it disagrees
+                                        // with the reading. Printing "20 degrees"
+                                        // twice, here and in the grid below, was
+                                        // noise pretending to be detail.
+                                        Row {
+                                            anchors.right: parent.right
+                                            spacing: 4
+                                            visible: view.feelsWorthShowing
+
+                                            NotchIcon {
+                                                name: icons.thermometer
+                                                size: 12
+                                                color: view.mutedColor
+                                            }
+
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: "Feels " + view.weatherData.feelsC + "\u00B0"
+                                                color: view.mutedColor
+                                                font.pixelSize: 11
+                                                font.family: view.fontFamily
+                                            }
+                                        }
+
+                                        Row {
+                                            anchors.right: parent.right
+                                            spacing: 4
+                                            visible: view.todayRain > 0
+
+                                            NotchIcon {
+                                                name: icons.rain
+                                                size: 12
+                                                color: view.accentColor
+                                            }
+
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: view.todayRain + "% rain"
+                                                color: view.accentColor
+                                                font.pixelSize: 11
+                                                font.weight: Font.Medium
+                                                font.family: view.fontFamily
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ---- section label: caps plus a rule filling the rest ----
+                                Item {
+                                    width: parent.width
+                                    height: 12
+
+                                    Text {
+                                        id: wxDetailsText
+                                        anchors.left: parent.left
+                                        anchors.bottom: parent.bottom
+                                        text: "DETAILS"
+                                        color: view.mutedColor
+                                        font.pixelSize: 10
+                                        font.weight: Font.Medium
+                                        font.family: view.fontFamily
+                                        font.letterSpacing: 1.1
+                                    }
+
+                                    Rectangle {
+                                        anchors.left: wxDetailsText.right
+                                        anchors.leftMargin: 8
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: 3
+                                        height: 1
+                                        color: view.textColor
+                                        opacity: 0.08
+                                    }
+                                }
+
+                                // ---- four stats, equal cells so the row reads as one ----
+                                // The wind cell's icon is the compass arrow,
+                                // rotated to the bearing, which reads faster than
+                                // "WNW" and costs no horizontal space.
+                                Row {
+                                    id: wxStats
+                                    width: parent.width
+                                    height: 54
+
+                                    Repeater {
+                                        model: [
+                                            { icon: icons.humidity, value: view.weatherData.humidity !== "" ? view.weatherData.humidity + "%" : "--", caption: "HUMIDITY", bearing: 0 },
+                                            { icon: icons.bearing, value: view.weatherData.windKph !== "" ? view.weatherData.windKph : "--", caption: view.weatherData.windDir !== "" ? "KM/H " + view.weatherData.windDir : "KM/H", bearing: view.windBearing(view.weatherData.windDir) },
+                                            { icon: icons.sun, value: view.weatherData.uv !== "" ? view.weatherData.uv : "--", caption: "UV INDEX", bearing: 0 },
+                                            { icon: icons.eye, value: view.weatherData.visibility !== "" ? view.weatherData.visibility : "--", caption: "VISIBLE KM", bearing: 0 }
+                                        ]
+
+                                        delegate: Item {
+                                            id: wxStat
+                                            required property var modelData
+
+                                            width: (wxStats.width - 24) / 4
+                                            height: wxStats.height
+
+                                            Item {
+                                                id: wxStatIconBox
+                                                anchors.top: parent.top
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                width: 16
+                                                height: 16
+
+                                                NotchIcon {
+                                                    anchors.centerIn: parent
+                                                    name: wxStat.modelData.icon
+                                                    size: 15
+                                                    color: view.mutedColor
+                                                    rotation: wxStat.modelData.bearing
+                                                }
+                                            }
+
+                                            // The caption hangs off the value rather
+                                            // than sitting at a fixed offset, so it
+                                            // cannot collide when the font is scaled.
+                                            Text {
+                                                id: wxStatValue
+                                                anchors.top: wxStatIconBox.bottom
+                                                anchors.topMargin: 4
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: wxStat.modelData.value
+                                                color: view.textColor
+                                                font.pixelSize: 13
+                                                font.weight: Font.Medium
+                                                font.family: view.fontFamily
+                                            }
+
+                                            Text {
+                                                anchors.top: wxStatValue.bottom
+                                                anchors.topMargin: 3
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                width: wxStat.width
+                                                horizontalAlignment: Text.AlignHCenter
+                                                text: wxStat.modelData.caption
+                                                color: view.mutedColor
+                                                font.pixelSize: 10
+                                                font.family: view.fontFamily
+                                                font.letterSpacing: 0.6
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ---- one advisory line, only when the day is worth acting on ----
+                                // The stat row already carries the numbers; this
+                                // carries the one thing that should change what you
+                                // do. First match wins, nothing when it is unremarkable.
+                                Rectangle {
+                                    id: wxAdvisory
+                                    width: parent.width
+                                    height: 26
+                                    radius: 8
+                                    visible: view.weatherAdvisory !== null
+                                    color: Qt.rgba(view.accentColor.r, view.accentColor.g, view.accentColor.b, 0.13)
+                                    border.width: 1
+                                    border.color: Qt.rgba(view.accentColor.r, view.accentColor.g, view.accentColor.b, 0.24)
+
+                                    NotchIcon {
+                                        id: wxAdvisoryIcon
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: view.weatherAdvisory ? view.weatherAdvisory.icon : ""
+                                        size: 13
+                                        color: view.accentColor
+                                    }
+
+                                    Text {
+                                        anchors.left: wxAdvisoryIcon.right
+                                        anchors.leftMargin: 7
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: view.weatherAdvisory ? view.weatherAdvisory.text : ""
+                                        color: view.textColor
+                                        font.pixelSize: 11
+                                        font.family: view.fontFamily
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                // ---- 3-day ----
+                                // Rows rather than three columns: a 332 wide card
+                                // gives each day a full line, and the range bar is
+                                // scaled across the whole week, so the warmest day
+                                // is visibly the longest bar instead of just the
+                                // biggest number.
+                                Item {
+                                    width: parent.width
+                                    height: 12
+
+                                    Text {
+                                        id: wxForecastText
+                                        anchors.left: parent.left
+                                        anchors.bottom: parent.bottom
+                                        text: "3-DAY"
+                                        color: view.mutedColor
+                                        font.pixelSize: 10
+                                        font.weight: Font.Medium
+                                        font.family: view.fontFamily
+                                        font.letterSpacing: 1.1
+                                    }
+
+                                    Rectangle {
+                                        anchors.left: wxForecastText.right
+                                        anchors.leftMargin: 8
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: 3
+                                        height: 1
+                                        color: view.textColor
+                                        opacity: 0.08
+                                    }
+                                }
+
+                                Repeater {
+                                    model: view.weatherData.forecast
+
+                                    delegate: Rectangle {
+                                        id: wxDay
+                                        required property var modelData
+                                        required property int index
+
+                                        readonly property real rain: Number(modelData.rainChance || 0)
+
+                                        width: wxFlow.width
+                                        height: 28
+                                        radius: 8
+                                        // Accent on today alone: it is the only row
+                                        // you can still act on.
+                                        color: index === 0 ? Qt.rgba(view.accentColor.r, view.accentColor.g, view.accentColor.b, 0.12) : "transparent"
+
+                                        Text {
+                                            id: wxDayName
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 6
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 42
+                                            text: view.forecastDayLabel(wxDay.index, wxDay.modelData.date)
+                                            color: wxDay.index === 0 ? view.accentColor : view.textColor
+                                            font.pixelSize: 11
+                                            font.weight: Font.Medium
+                                            font.family: view.fontFamily
+                                            elide: Text.ElideRight
+                                        }
+
+                                        NotchIcon {
+                                            id: wxDayIcon
+                                            anchors.left: wxDayName.right
+                                            anchors.leftMargin: 4
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            name: view.weatherIconName(wxDay.modelData.condition)
+                                            size: 15
+                                            color: view.mutedColor
+                                        }
+
+                                        Text {
+                                            id: wxDayLo
+                                            anchors.left: wxDayIcon.right
+                                            anchors.leftMargin: 8
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 24
+                                            horizontalAlignment: Text.AlignRight
+                                            text: wxDay.modelData.loC + "\u00B0"
+                                            color: view.mutedColor
+                                            font.pixelSize: 12
+                                            font.family: view.fontFamily
+                                        }
+
+                                        Item {
+                                            id: wxDayTrack
+                                            anchors.left: wxDayLo.right
+                                            anchors.leftMargin: 8
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            // 188 is everything around the bar: 6 pad
+                                            // + 42 day + 4 + 15 icon + 8 + 24 lo +
+                                            // 8 + 8 + 24 hi + 8 + 34 rain + 6 pad.
+                                            width: Math.max(60, wxDay.width - 188)
+                                            height: 4
+
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: 2
+                                                color: view.textColor
+                                                opacity: 0.10
+                                            }
+
+                                            Rectangle {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                height: parent.height
+                                                radius: 2
+                                                color: view.accentColor
+                                                opacity: 0.8
+                                                x: parent.width * view.forecastFrac(wxDay.modelData.loC, false)
+                                                width: Math.max(6, parent.width * (view.forecastFrac(wxDay.modelData.hiC, true) - view.forecastFrac(wxDay.modelData.loC, false)))
+                                            }
+                                        }
+
+                                        Text {
+                                            id: wxDayHi
+                                            anchors.left: wxDayTrack.right
+                                            anchors.leftMargin: 8
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 24
+                                            text: wxDay.modelData.hiC + "\u00B0"
+                                            color: view.textColor
+                                            font.pixelSize: 12
+                                            font.weight: Font.Medium
+                                            font.family: view.fontFamily
+                                        }
+
+                                        Row {
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 6
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 3
+                                            visible: wxDay.rain > 0
+
+                                            NotchIcon {
+                                                name: icons.rain
+                                                size: 11
+                                                color: view.accentColor
+                                            }
+
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: wxDay.rain + "%"
+                                                color: view.accentColor
+                                                font.pixelSize: 10
+                                                font.weight: Font.Medium
+                                                font.family: view.fontFamily
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                        }
 
-                            MouseArea {
-                                id: wxRefreshArea
+                        // ---- first fetch: the real shapes, filled in ----
+                        // A skeleton that mirrors the finished layout does not
+                        // jump when the data lands, and unlike a spinner it can
+                        // be static - the hub already honours motionScale and a
+                        // looping pulse here would ignore it.
+                        Item {
+                            anchors.fill: parent
+                            visible: !view.weatherHasData && view.weatherLoading
+
+                            Column {
                                 anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: view.refreshWeather()
+                                spacing: 14
+
+                                Item {
+                                    width: parent.width
+                                    height: 38
+
+                                    Rectangle {
+                                        id: wxSkIcon
+                                        anchors.left: parent.left
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 38
+                                        height: 38
+                                        radius: 10
+                                        color: Qt.rgba(1, 1, 1, 0.07)
+                                    }
+
+                                    Column {
+                                        anchors.left: wxSkIcon.right
+                                        anchors.leftMargin: 12
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 7
+
+                                        Rectangle {
+                                            width: 88
+                                            height: 22
+                                            radius: 6
+                                            color: Qt.rgba(1, 1, 1, 0.07)
+                                        }
+
+                                        Rectangle {
+                                            width: 150
+                                            height: 10
+                                            radius: 5
+                                            color: Qt.rgba(1, 1, 1, 0.05)
+                                        }
+                                    }
+                                }
+
+                                Row {
+                                    id: wxSkStats
+                                    width: parent.width
+                                    height: 44
+
+                                    Repeater {
+                                        model: 4
+
+                                        delegate: Item {
+                                            width: (wxSkStats.width - 24) / 4
+                                            height: wxSkStats.height
+
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 46
+                                                height: 11
+                                                radius: 5
+                                                color: Qt.rgba(1, 1, 1, 0.05)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Column {
+                                    width: parent.width
+                                    spacing: 9
+
+                                    Repeater {
+                                        model: [1, 0.82, 0.64]
+
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            width: parent.width * Number(modelData)
+                                            height: 11
+                                            radius: 5
+                                            color: Qt.rgba(1, 1, 1, 0.05)
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    width: parent.width
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: "Fetching weather\u2026"
+                                    color: view.mutedColor
+                                    font.pixelSize: 11
+                                    font.family: view.fontFamily
+                                }
                             }
                         }
-                    }
 
-                    // ---- hero: icon, big temp, condition + feels ----
-                    Item {
-                        width: parent.width
-                        height: 56
-                        visible: view.weatherHasData
-
-                        NotchIcon {
-                            id: wxHeroIcon
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: view.weatherIconName(view.weatherData.condition)
-                            size: 44
-                            color: view.textColor
-                        }
-
-                        Column {
-                            anchors.left: wxHeroIcon.right
-                            anchors.leftMargin: 14
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 0
-
-                            Text {
-                                text: view.weatherData.tempC + "\u00B0"
-                                color: view.textColor
-                                font.pixelSize: 30
-                                font.weight: Font.DemiBold
-                                font.family: view.fontFamily
-                            }
-
-                            Text {
-                                text: view.weatherData.condition + (view.weatherData.feelsC !== "" ? " · Feels " + view.weatherData.feelsC + "\u00B0" : "")
-                                color: view.mutedColor
-                                font.pixelSize: 11
-                                font.family: view.fontFamily
-                            }
-                        }
-
-                        Column {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 0
-                            visible: view.weatherData.forecast.length > 0
-
-                            Text {
-                                anchors.right: parent.right
-                                text: view.weatherData.forecast.length > 0 ? view.weatherData.forecast[0].hiC + "\u00B0 / " + view.weatherData.forecast[0].loC + "\u00B0" : ""
-                                color: view.textColor
-                                font.pixelSize: 13
-                                font.weight: Font.Medium
-                                font.family: view.fontFamily
-                            }
-
-                            Text {
-                                anchors.right: parent.right
-                                visible: view.weatherData.forecast.length > 0 && view.weatherData.forecast[0].rainChance !== "" && Number(view.weatherData.forecast[0].rainChance) > 0
-                                text: view.weatherData.forecast.length > 0 ? view.weatherData.forecast[0].rainChance + "% rain" : ""
-                                color: view.accentColor
-                                font.pixelSize: 10
-                                font.family: view.fontFamily
-                            }
-                        }
-                    }
-
-                    // ---- meta grid: feels / humidity / wind / uv ----
-                    Grid {
-                        width: parent.width
-                        columns: 2
-                        rowSpacing: 8
-                        columnSpacing: 8
-                        visible: view.weatherHasData
-
+                        // ---- nothing to show: say why, and offer the way back ----
                         Item {
-                            width: (parent.width - 8) / 2
-                            height: 32
-
-                            NotchIcon {
-                                id: wxFeelsIcon
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: icons.thermometer
-                                size: 14
-                                color: view.mutedColor
-                            }
+                            anchors.fill: parent
+                            visible: !view.weatherHasData && !view.weatherLoading
 
                             Column {
-                                anchors.left: wxFeelsIcon.right
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 0
-
-                                Text {
-                                    text: view.weatherData.feelsC !== "" ? view.weatherData.feelsC + "\u00B0C" : "--"
-                                    color: view.textColor
-                                    font.pixelSize: 11
-                                    font.weight: Font.Medium
-                                    font.family: view.fontFamily
-                                }
-
-                                Text {
-                                    text: "FEELS LIKE"
-                                    color: view.mutedColor
-                                    font.pixelSize: 8
-                                    font.family: view.fontFamily
-                                    font.letterSpacing: 0.8
-                                }
-                            }
-                        }
-
-                        Item {
-                            width: (parent.width - 8) / 2
-                            height: 32
-
-                            NotchIcon {
-                                id: wxHumIcon
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: icons.humidity
-                                size: 14
-                                color: view.mutedColor
-                            }
-
-                            Column {
-                                anchors.left: wxHumIcon.right
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 0
-
-                                Text {
-                                    text: view.weatherData.humidity !== "" ? view.weatherData.humidity + "%" : "--"
-                                    color: view.textColor
-                                    font.pixelSize: 11
-                                    font.weight: Font.Medium
-                                    font.family: view.fontFamily
-                                }
-
-                                Text {
-                                    text: "HUMIDITY"
-                                    color: view.mutedColor
-                                    font.pixelSize: 8
-                                    font.family: view.fontFamily
-                                    font.letterSpacing: 0.8
-                                }
-                            }
-                        }
-
-                        Item {
-                            width: (parent.width - 8) / 2
-                            height: 32
-
-                            NotchIcon {
-                                id: wxWindIcon
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: icons.wind
-                                size: 14
-                                color: view.mutedColor
-                            }
-
-                            Column {
-                                anchors.left: wxWindIcon.right
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 0
-
-                                Text {
-                                    text: view.weatherData.windKph !== "" ? view.weatherData.windKph + " km/h" + (view.weatherData.windDir !== "" ? " " + view.weatherData.windDir : "") : "--"
-                                    color: view.textColor
-                                    font.pixelSize: 11
-                                    font.weight: Font.Medium
-                                    font.family: view.fontFamily
-                                }
-
-                                Text {
-                                    text: "WIND"
-                                    color: view.mutedColor
-                                    font.pixelSize: 8
-                                    font.family: view.fontFamily
-                                    font.letterSpacing: 0.8
-                                }
-                            }
-                        }
-
-                        Item {
-                            width: (parent.width - 8) / 2
-                            height: 32
-
-                            NotchIcon {
-                                id: wxUvIcon
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                name: icons.sun
-                                size: 14
-                                color: view.mutedColor
-                            }
-
-                            Column {
-                                anchors.left: wxUvIcon.right
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 0
-
-                                Text {
-                                    text: view.weatherData.uv !== "" ? "UV " + view.weatherData.uv : "--"
-                                    color: view.textColor
-                                    font.pixelSize: 11
-                                    font.weight: Font.Medium
-                                    font.family: view.fontFamily
-                                }
-
-                                Text {
-                                    text: "UV INDEX"
-                                    color: view.mutedColor
-                                    font.pixelSize: 8
-                                    font.family: view.fontFamily
-                                    font.letterSpacing: 0.8
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: view.textColor
-                        opacity: 0.07
-                        visible: view.weatherHasData && view.weatherData.forecast.length > 0
-                    }
-
-                    // ---- 3-day forecast ----
-                    Row {
-                        width: parent.width
-                        spacing: 10
-                        visible: view.weatherHasData && view.weatherData.forecast.length > 0
-
-                        Repeater {
-                            model: view.weatherData.forecast
-
-                            delegate: Column {
-                                id: wxDayCol
-                                required property var modelData
-                                required property int index
-                                width: (parent.width - 20) / 3
-                                spacing: 3
-
-                                Text {
-                                    text: wxDayCol.index === 0 ? "Today" : wxDayCol.index === 1 ? "Tmrw" : Qt.formatDate(new Date(wxDayCol.modelData.date), "ddd")
-                                    color: wxDayCol.index === 0 ? view.accentColor : view.mutedColor
-                                    font.pixelSize: 10
-                                    font.weight: wxDayCol.index === 0 ? Font.Medium : Font.Normal
-                                    font.family: view.fontFamily
-                                }
+                                anchors.centerIn: parent
+                                width: Math.min(parent.width, 240)
+                                spacing: 8
 
                                 NotchIcon {
-                                    name: view.weatherIconName(wxDayCol.modelData.condition)
-                                    size: 18
-                                    color: view.textColor
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    name: icons.cloudy
+                                    size: 26
+                                    color: view.mutedColor
                                 }
 
                                 Text {
-                                    text: wxDayCol.modelData.hiC + "\u00B0/" + wxDayCol.modelData.loC + "\u00B0"
+                                    width: parent.width
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: "No weather data"
                                     color: view.textColor
-                                    font.pixelSize: 10
+                                    font.pixelSize: 12
                                     font.family: view.fontFamily
                                 }
 
                                 Text {
-                                    visible: wxDayCol.modelData.rainChance !== "" && Number(wxDayCol.modelData.rainChance) > 0
-                                    text: wxDayCol.modelData.rainChance + "%"
-                                    color: view.accentColor
-                                    font.pixelSize: 9
+                                    width: parent.width
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: "Check your connection, or set a city on the first line of ~/.config/omarchy/notch-island-location.txt"
+                                    color: view.mutedColor
+                                    font.pixelSize: 11
                                     font.family: view.fontFamily
+                                    wrapMode: Text.Wrap
+                                }
+
+                                Rectangle {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    width: wxRetryLabel.implicitWidth + 26
+                                    height: 24
+                                    radius: 12
+                                    color: wxRetryArea.containsMouse ? Qt.rgba(view.accentColor.r, view.accentColor.g, view.accentColor.b, 0.85) : view.accentColor
+
+                                    Behavior on color {
+                                        ColorAnimation { duration: 120 * view.speed }
+                                    }
+
+                                    Text {
+                                        id: wxRetryLabel
+                                        anchors.centerIn: parent
+                                        text: "Retry"
+                                        color: view.accentText
+                                        font.pixelSize: 11
+                                        font.weight: Font.Medium
+                                        font.family: view.fontFamily
+                                    }
+
+                                    MouseArea {
+                                        id: wxRetryArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: view.refreshWeather()
+                                    }
                                 }
                             }
                         }
                     }
-
-                    // ---- empty / loading states ----
-                    Text {
-                        visible: !view.weatherHasData && !view.weatherLoading
-                        width: parent.width
-                        horizontalAlignment: Text.AlignHCenter
-                        topPadding: 40
-                        text: "No weather data. Check your network or location file."
-                        color: view.mutedColor
-                        font.pixelSize: 11
-                        font.family: view.fontFamily
-                        wrapMode: Text.Wrap
-                    }
-
-                    Text {
-                        visible: !view.weatherHasData && view.weatherLoading
-                        width: parent.width
-                        horizontalAlignment: Text.AlignHCenter
-                        topPadding: 40
-                        text: "Fetching weather\u2026"
-                        color: view.mutedColor
-                        font.pixelSize: 11
-                        font.family: view.fontFamily
-                    }
-                }
-
                 }
             }
 

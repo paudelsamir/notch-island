@@ -87,11 +87,22 @@ bind = SUPER, N, exec, ~/.config/omarchy/plugins/paudelsamir.notch-island/script
 ## Install
 
 ```bash
-./scripts/install.sh
+omarchy plugin add https://github.com/paudelsamir/notch-island.git --enable
 ```
 
-This copies the plugin to `~/.config/omarchy/plugins/user.notch-island`, registers it and
-restarts the shell.
+## Configure
+
+Right-click the resting island, or pick **Settings** in the menu, to open its own
+settings window: position and edge, shape, dock slots, animation, click behavior,
+media, and opencode. Settings are the island's own
+(`~/.config/omarchy/notch-island.json`), independent of `~/.config/omarchy/shell.json`,
+and are written live.
+
+From a keybind or a terminal:
+
+```bash
+scripts/ipc.sh show settings
+```
 
 > **Running it as a standalone overlay.** The notch is easiest to keep out of the bar
 > slot, because `omarchy.bar` holds exactly one bar. To do that, point a private
@@ -128,17 +139,20 @@ database path.
 ## Remove
 
 ```bash
-./scripts/uninstall.sh
+omarchy plugin remove paudelsamir.notch-island
 ```
 
-That restores the stock bar and deletes the plugin folder. Your settings stay at
-`~/.config/omarchy/notch-island.json`; delete that too for a clean slate. If you ran it
-standalone, also drop the service and the config:
+Your settings stay at `~/.config/omarchy/notch-island.json`; delete that too for a clean
+slate. If you ran it standalone, also drop the service and the config:
 
 ```bash
 systemctl --user disable --now quickshell-notch-island
 rm -rf ~/.config/quickshell/notch-island
 ```
+
+Working on a clone instead? `./scripts/install.sh` copies the folder into
+`~/.config/omarchy/plugins/user.notch-island`, and `./scripts/uninstall.sh` removes it
+again.
 
 ---
 
